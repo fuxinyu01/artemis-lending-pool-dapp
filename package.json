@@ -32,6 +32,7 @@
     "forge-std": "github:foundry-rs/forge-std#v1.9.4",
     "hardhat": "^3.4.3",
     "mocha": "^11.7.5",
+    "pinata": "^2.5.6",
     "typescript": "~5.8.0"
   },
   "dependencies": {
