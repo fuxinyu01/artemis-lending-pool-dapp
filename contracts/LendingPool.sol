@@ -54,11 +54,22 @@ contract LendingPool is ReentrancyGuard {
     /// @notice Maps borrower address to borrowing position.
     mapping(address => Position) public positions;
 
+    /// @notice List of borrowers tracked for prototype-level total loan value calculation.
+    /// @dev This is acceptable for a small prototype but not suitable for a large production protocol.
+    address[] public borrowers;
+
+    /// @notice Tracks whether an address has already been added to borrowers.
+    mapping(address => bool) public borrowerTracked;
+
     event CollateralDeposited(address indexed borrower, uint256 amount);
 
     event Borrowed(address indexed borrower, uint256 amount);
 
-    event Repaid(address indexed borrower, uint256 repaymentAmount);
+    event Repaid(
+        address indexed borrower,
+        uint256 repaymentAmount,
+        uint256 interest
+    );
 
     event CollateralWithdrawn(address indexed borrower, uint256 amount);
 
@@ -144,6 +155,11 @@ contract LendingPool is ReentrancyGuard {
         position.borrowedAmount += amount;
         position.active = true;
 
+        if (!borrowerTracked[msg.sender]) {
+            borrowers.push(msg.sender);
+            borrowerTracked[msg.sender] = true;
+        }
+
         liquidityPool.transferToBorrower(msg.sender, amount);
 
         emit Borrowed(msg.sender, amount);
@@ -158,6 +174,64 @@ contract LendingPool is ReentrancyGuard {
         return principal + interest;
     }
 
+    /// @notice Returns the total current value of all active loans, including fixed interest.
+    /// @dev This loops through all tracked borrowers, which is acceptable for this prototype
+    ///      but not suitable for a large production protocol.
+    function currentLoanValue() external view returns (uint256) {
+        uint256 total = 0;
+
+        for (uint256 i = 0; i < borrowers.length; i++) {
+            address borrower = borrowers[i];
+
+            if (positions[borrower].borrowedAmount > 0) {
+                total += getRepaymentAmount(borrower);
+            }
+        }
+
+        return total;
+    }
+
+    /// @notice Returns the number of tracked borrowers.
+    function getBorrowersCount() external view returns (uint256) {
+        return borrowers.length;
+    }
+
+    /// @notice Returns a tracked borrower address by index.
+    function getBorrowerAt(uint256 index) external view returns (address) {
+        require(index < borrowers.length, "Borrower index out of range");
+
+        return borrowers[index];
+    }
+
+    /// @notice Returns all tracked borrower addresses.
+    /// @dev This is acceptable for a small prototype/demo, but not suitable for a large production protocol.
+    function getAllBorrowers() external view returns (address[] memory) {
+        return borrowers;
+    }
+
+    /// @notice Returns borrower information for frontend display.
+    function getBorrowerSummary(address borrower)
+        external
+        view
+        returns (
+            uint256 collateralETH,
+            uint256 borrowedAmount,
+            uint256 repaymentAmount,
+            bool active,
+            bool liquidatable
+        )
+    {
+        Position memory position = positions[borrower];
+
+        return (
+            position.collateralETH,
+            position.borrowedAmount,
+            getRepaymentAmount(borrower),
+            position.active,
+            isLiquidatable(borrower)
+        );
+    }
+
     /// @notice Repay the full borrowed amount plus fixed interest.
     /// @dev Borrower must approve the LiquidityPool before calling this function.
     function repay() external nonReentrant {
@@ -165,7 +239,9 @@ contract LendingPool is ReentrancyGuard {
 
         require(position.borrowedAmount > 0, "No active loan");
 
-        uint256 repaymentAmount = getRepaymentAmount(msg.sender);
+        uint256 principal = position.borrowedAmount;
+        uint256 interest = (principal * INTEREST_RATE) / 100;
+        uint256 repaymentAmount = principal + interest;
 
         liquidityPool.receiveRepayment(msg.sender, repaymentAmount);
 
@@ -175,7 +251,7 @@ contract LendingPool is ReentrancyGuard {
             position.active = false;
         }
 
-        emit Repaid(msg.sender, repaymentAmount);
+        emit Repaid(msg.sender, repaymentAmount, interest);
     }
 
     /// @notice Withdraw ETH collateral.
@@ -269,7 +345,8 @@ contract LendingPool is ReentrancyGuard {
     }
 
     /// @notice Liquidate an under-collateralised position.
-    /// @dev The liquidator repays part of the borrower's debt and receives ETH collateral with a bonus.
+    /// @dev The liquidator repays part of the borrower's borrowed principal and receives ETH collateral with a bonus.
+    ///      For this prototype, liquidation is based on principal only, while normal repayment includes fixed interest.
     ///      Liquidator must approve the LiquidityPool before calling this function.
     /// @param borrower The borrower whose position is being liquidated.
     /// @param repayAmount The amount of MockUSDT debt the liquidator wants to repay, using 6 decimals.

@@ -1,9 +1,0 @@
-[
-  {
-    "event": "CollateralDeposited",
-    "user": "0x1234567890abcdef1234567890abcdef12345678",
-    "cid": "bafkreia2cenb6tc3d4uwltj2az663stxa4qf5slmh7aq6h7tokxgqihusa",
-    "txHash": "0xabc123",
-    "timestamp": 1778246474633
-  }
-]
