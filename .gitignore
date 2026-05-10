@@ -21,6 +21,9 @@
 .env.*
 !.env.example
 
+# Local IPFS CID index
+cids.json
+
 # Hardhat coverage reports
 /coverage
 
