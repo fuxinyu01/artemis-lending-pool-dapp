@@ -10,6 +10,16 @@ import {
   lpTokenAbi,
   mockPriceOracleAbi,
 } from "./abi/minimalAbis";
+import {
+  isIPFSConfigured,
+  uploadToIPFS,
+  saveToHistory,
+  loadHistory,
+  GATEWAY_URL,
+  type TransactionRecord,
+  type HistoryEntry,
+  type EventName,
+} from "./services/ipfsService";
 
 declare global {
   interface Window {
@@ -59,6 +69,12 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function eventBadgeClass(event: string): string {
+  if (event === "Liquidated") return "danger";
+  if (event === "Borrowed") return "info";
+  return "success";
+}
+
 function App() {
   const [account, setAccount] = useState<string>("");
   const [contracts, setContracts] = useState<Contracts | null>(null);
@@ -89,6 +105,10 @@ function App() {
   const [liquidationRepayInput, setLiquidationRepayInput] = useState("");
 
   const [newEthPriceInput, setNewEthPriceInput] = useState("");
+
+  const [ipfsHistory, setIpfsHistory] = useState<HistoryEntry[]>([]);
+  const [ipfsUploading, setIpfsUploading] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState<EventName | "All">("All");
 
   async function connectWallet() {
     if (!window.ethereum) {
@@ -138,6 +158,7 @@ function App() {
 
     setAccount(connectedAccount);
     setContracts(connectedContracts);
+    setIpfsHistory(loadHistory());
 
     setStatus("Wallet connected.");
     await refreshState(connectedAccount, connectedContracts);
@@ -236,7 +257,11 @@ function App() {
     await loadBorrowers();
   }
 
-  async function runTx(label: string, fn: () => Promise<any>) {
+  async function runTx(
+    label: string,
+    fn: () => Promise<any>,
+    ipfsEvent?: { event: EventName; data: Record<string, unknown> }
+  ) {
     try {
       if (!contracts) {
         setStatus("Please connect wallet first.");
@@ -245,10 +270,37 @@ function App() {
 
       setStatus(`${label}...`);
       const tx = await fn();
-      await tx.wait();
+      const receipt = await tx.wait();
 
       setStatus(`${label} completed.`);
       await refreshAll();
+
+      if (ipfsEvent && isIPFSConfigured()) {
+        setIpfsUploading(true);
+        try {
+          const record: TransactionRecord = {
+            event: ipfsEvent.event,
+            user: account,
+            data: ipfsEvent.data,
+            txHash: receipt.hash,
+            timestamp: Date.now(),
+          };
+          const cid = await uploadToIPFS(record);
+          saveToHistory({
+            cid,
+            event: record.event,
+            timestamp: record.timestamp,
+            txHash: record.txHash,
+            user: record.user,
+          });
+          setIpfsHistory(loadHistory());
+          setStatus(`${label} completed. Saved to IPFS: ${cid.slice(0, 16)}...`);
+        } catch (err: any) {
+          console.error("IPFS upload failed:", err);
+        } finally {
+          setIpfsUploading(false);
+        }
+      }
     } catch (error: any) {
       console.error(error);
       setStatus(error?.shortMessage || error?.message || "Transaction failed.");
@@ -256,17 +308,25 @@ function App() {
   }
 
   async function depositCollateral() {
-    await runTx("Depositing collateral", async () => {
-      return contracts!.lendingPool.depositCollateral({
-        value: parseETH(collateralInput),
-      });
-    });
+    await runTx(
+      "Depositing collateral",
+      async () => {
+        return contracts!.lendingPool.depositCollateral({
+          value: parseETH(collateralInput),
+        });
+      },
+      { event: "CollateralDeposited", data: { amount: `${collateralInput} ETH` } }
+    );
   }
 
   async function borrow() {
-    await runTx("Borrowing MockUSDT", async () => {
-      return contracts!.lendingPool.borrow(parseUSDT(borrowInput));
-    });
+    await runTx(
+      "Borrowing MockUSDT",
+      async () => {
+        return contracts!.lendingPool.borrow(parseUSDT(borrowInput));
+      },
+      { event: "Borrowed", data: { amount: `${borrowInput} USDT` } }
+    );
   }
 
   async function approveRepayment() {
@@ -277,17 +337,25 @@ function App() {
   }
 
   async function repay() {
-    await runTx("Repaying loan", async () => {
-      return contracts!.lendingPool.repay();
-    });
+    await runTx(
+      "Repaying loan",
+      async () => {
+        return contracts!.lendingPool.repay();
+      },
+      { event: "Repaid", data: { note: "Full repayment + 5% interest" } }
+    );
   }
 
   async function withdrawCollateral() {
-    await runTx("Withdrawing collateral", async () => {
-      return contracts!.lendingPool.withdrawCollateral(
-        parseETH(withdrawCollateralInput)
-      );
-    });
+    await runTx(
+      "Withdrawing collateral",
+      async () => {
+        return contracts!.lendingPool.withdrawCollateral(
+          parseETH(withdrawCollateralInput)
+        );
+      },
+      { event: "CollateralWithdrawn", data: { amount: `${withdrawCollateralInput} ETH` } }
+    );
   }
 
   async function approveLiquidity() {
@@ -335,12 +403,22 @@ function App() {
       return;
     }
 
-    await runTx("Liquidating position", async () => {
-      return contracts!.lendingPool.liquidate(
-        selectedBorrower,
-        parseUSDT(liquidationRepayInput)
-      );
-    });
+    await runTx(
+      "Liquidating position",
+      async () => {
+        return contracts!.lendingPool.liquidate(
+          selectedBorrower,
+          parseUSDT(liquidationRepayInput)
+        );
+      },
+      {
+        event: "Liquidated",
+        data: {
+          borrower: selectedBorrower,
+          repayAmount: `${liquidationRepayInput} USDT`,
+        },
+      }
+    );
   }
 
   async function setETHPrice() {
@@ -620,6 +698,111 @@ function App() {
             <button onClick={setETHPrice}>Set ETH Price</button>
           </div>
         </div>
+      </section>
+
+      <section className="card">
+        <div className="card-heading">
+          <div>
+            <h2>Transaction History</h2>
+            <p>
+              {isIPFSConfigured()
+                ? "Each transaction is permanently stored on IPFS via Pinata. Click a CID to view the raw JSON record."
+                : "Add VITE_PINATA_JWT to frontend/.env to enable IPFS transaction history."}
+            </p>
+          </div>
+          <div className="heading-actions">
+            {ipfsUploading && (
+              <span className="badge info">Uploading to IPFS...</span>
+            )}
+            {ipfsHistory.length > 0 && (
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  localStorage.removeItem("artemis_ipfs_history");
+                  setIpfsHistory([]);
+                }}
+              >
+                Clear History
+              </button>
+            )}
+          </div>
+        </div>
+
+        {!isIPFSConfigured() ? (
+          <div className="empty-notice">
+            IPFS not configured — add <code>VITE_PINATA_JWT</code> to{" "}
+            <code>frontend/.env</code> to enable.
+          </div>
+        ) : (
+          <>
+            <div className="filter-bar">
+              {(["All", "CollateralDeposited", "Borrowed", "Repaid", "CollateralWithdrawn", "Liquidated"] as const).map(
+                (f) => (
+                  <button
+                    key={f}
+                    className={`filter-btn${historyFilter === f ? " active" : ""}`}
+                    onClick={() => setHistoryFilter(f)}
+                  >
+                    {f === "CollateralDeposited" ? "Deposited"
+                      : f === "CollateralWithdrawn" ? "Withdrawn"
+                      : f}
+                  </button>
+                )
+              )}
+            </div>
+
+            {ipfsHistory.length === 0 ? (
+              <div className="empty-notice">
+                No transactions recorded yet. Complete a transaction above to store it on IPFS.
+              </div>
+            ) : (
+              <div className="table-wrapper history-table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Event</th>
+                      <th>Account</th>
+                      <th>Time</th>
+                      <th>Tx Hash</th>
+                      <th>IPFS CID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(historyFilter === "All"
+                      ? ipfsHistory
+                      : ipfsHistory.filter((e) => e.event === historyFilter)
+                    ).map((entry) => (
+                      <tr key={entry.cid}>
+                        <td>
+                          <span className={`badge ${eventBadgeClass(entry.event)}`}>
+                            {entry.event}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="mono">{shortAddress(entry.user)}</span>
+                        </td>
+                        <td>{new Date(entry.timestamp).toLocaleTimeString()}</td>
+                        <td>
+                          <span className="mono">{entry.txHash.slice(0, 14)}...</span>
+                        </td>
+                        <td>
+                          <a
+                            href={`${GATEWAY_URL}/ipfs/${entry.cid}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="ipfs-link"
+                          >
+                            {entry.cid.slice(0, 16)}...
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
       </section>
 
       <section className="card">
