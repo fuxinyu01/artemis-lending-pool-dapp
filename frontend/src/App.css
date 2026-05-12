@@ -366,6 +366,43 @@ pre {
   text-decoration: underline;
 }
 
+.history-table-wrapper {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.filter-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: #94a3b8;
+  box-shadow: none;
+  letter-spacing: 0.02em;
+}
+
+.filter-btn:hover {
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #e5e7eb;
+  transform: none;
+  box-shadow: none;
+}
+
+.filter-btn.active {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #7dd3fc;
+}
+
 @media (max-width: 980px) {
   .wallet-card,
   .stats-grid,

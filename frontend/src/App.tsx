@@ -108,6 +108,7 @@ function App() {
 
   const [ipfsHistory, setIpfsHistory] = useState<HistoryEntry[]>([]);
   const [ipfsUploading, setIpfsUploading] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState<EventName | "All">("All");
 
   async function connectWallet() {
     if (!window.ethereum) {
@@ -732,52 +733,75 @@ function App() {
             IPFS not configured — add <code>VITE_PINATA_JWT</code> to{" "}
             <code>frontend/.env</code> to enable.
           </div>
-        ) : ipfsHistory.length === 0 ? (
-          <div className="empty-notice">
-            No transactions recorded yet. Complete a transaction above to store it on IPFS.
-          </div>
         ) : (
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Event</th>
-                  <th>Account</th>
-                  <th>Time</th>
-                  <th>Tx Hash</th>
-                  <th>IPFS CID</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ipfsHistory.map((entry) => (
-                  <tr key={entry.cid}>
-                    <td>
-                      <span className={`badge ${eventBadgeClass(entry.event)}`}>
-                        {entry.event}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="mono">{shortAddress(entry.user)}</span>
-                    </td>
-                    <td>{new Date(entry.timestamp).toLocaleTimeString()}</td>
-                    <td>
-                      <span className="mono">{entry.txHash.slice(0, 14)}...</span>
-                    </td>
-                    <td>
-                      <a
-                        href={`${GATEWAY_URL}/ipfs/${entry.cid}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="ipfs-link"
-                      >
-                        {entry.cid.slice(0, 16)}...
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="filter-bar">
+              {(["All", "CollateralDeposited", "Borrowed", "Repaid", "CollateralWithdrawn", "Liquidated"] as const).map(
+                (f) => (
+                  <button
+                    key={f}
+                    className={`filter-btn${historyFilter === f ? " active" : ""}`}
+                    onClick={() => setHistoryFilter(f)}
+                  >
+                    {f === "CollateralDeposited" ? "Deposited"
+                      : f === "CollateralWithdrawn" ? "Withdrawn"
+                      : f}
+                  </button>
+                )
+              )}
+            </div>
+
+            {ipfsHistory.length === 0 ? (
+              <div className="empty-notice">
+                No transactions recorded yet. Complete a transaction above to store it on IPFS.
+              </div>
+            ) : (
+              <div className="table-wrapper history-table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Event</th>
+                      <th>Account</th>
+                      <th>Time</th>
+                      <th>Tx Hash</th>
+                      <th>IPFS CID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(historyFilter === "All"
+                      ? ipfsHistory
+                      : ipfsHistory.filter((e) => e.event === historyFilter)
+                    ).map((entry) => (
+                      <tr key={entry.cid}>
+                        <td>
+                          <span className={`badge ${eventBadgeClass(entry.event)}`}>
+                            {entry.event}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="mono">{shortAddress(entry.user)}</span>
+                        </td>
+                        <td>{new Date(entry.timestamp).toLocaleTimeString()}</td>
+                        <td>
+                          <span className="mono">{entry.txHash.slice(0, 14)}...</span>
+                        </td>
+                        <td>
+                          <a
+                            href={`${GATEWAY_URL}/ipfs/${entry.cid}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="ipfs-link"
+                          >
+                            {entry.cid.slice(0, 16)}...
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </section>
 
