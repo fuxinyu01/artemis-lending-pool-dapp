@@ -1,15 +1,21 @@
 const JWT = import.meta.env.VITE_PINATA_JWT as string | undefined;
 
-export const GATEWAY_URL =
+const rawGateway =
   (import.meta.env.VITE_PINATA_GATEWAY as string | undefined) ??
   "https://gateway.pinata.cloud";
+
+export const GATEWAY_URL = rawGateway
+  .replace(/\/ipfs\/?$/, "")
+  .replace(/\/$/, "");
 
 export type EventName =
   | "CollateralDeposited"
   | "Borrowed"
   | "Repaid"
   | "CollateralWithdrawn"
-  | "Liquidated";
+  | "Liquidated"
+  | "LiquidityDeposited"
+  | "LiquidityWithdrawn";
 
 export type TransactionRecord = {
   event: EventName;
@@ -34,9 +40,14 @@ export function isIPFSConfigured(): boolean {
 }
 
 export async function uploadToIPFS(record: TransactionRecord): Promise<string> {
-  if (!JWT) throw new Error("VITE_PINATA_JWT not configured");
+  if (!JWT) {
+    throw new Error("VITE_PINATA_JWT not configured");
+  }
 
-  const blob = new Blob([JSON.stringify(record)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify(record, null, 2)], {
+    type: "application/json",
+  });
+
   const file = new File([blob], `artemis-${record.event}.json`, {
     type: "application/json",
   });
@@ -48,7 +59,9 @@ export async function uploadToIPFS(record: TransactionRecord): Promise<string> {
 
   const res = await fetch("https://uploads.pinata.cloud/v3/files", {
     method: "POST",
-    headers: { Authorization: `Bearer ${JWT}` },
+    headers: {
+      Authorization: `Bearer ${JWT}`,
+    },
     body: form,
   });
 
@@ -58,13 +71,23 @@ export async function uploadToIPFS(record: TransactionRecord): Promise<string> {
   }
 
   const json = await res.json();
-  return json.data.cid as string;
+  const cid = json?.data?.cid;
+
+  if (!cid) {
+    throw new Error("Pinata upload succeeded but CID was not returned");
+  }
+
+  return cid as string;
 }
 
 export async function fetchFromIPFS(cid: string): Promise<TransactionRecord> {
   const url = `${GATEWAY_URL}/ipfs/${cid}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Gateway fetch failed: ${res.statusText}`);
+
+  if (!res.ok) {
+    throw new Error(`Gateway fetch failed: ${res.statusText}`);
+  }
+
   return res.json() as Promise<TransactionRecord>;
 }
 

@@ -79,6 +79,7 @@ function shortAddress(address: string): string {
 function eventBadgeClass(event: string): string {
   if (event === "Liquidated") return "danger";
   if (event === "Borrowed") return "info";
+  if (event === "LiquidityWithdrawn") return "info";
   return "success";
 }
 
@@ -516,6 +517,19 @@ function App() {
         return;
       }
 
+      const available = toBigInt(
+        await contracts.liquidityPool.availableLiquidity()
+      );
+
+      if (inputAmount > available) {
+        const message = `Borrow amount exceeds available pool liquidity. Current available liquidity is ${formatUSDT(
+          available
+        )} MockUSDT. Please deposit more liquidity first.`;
+        setStatus(message);
+        window.alert(message);
+        return;
+      }
+
       await runTx(
         "Borrowing MockUSDT",
         async () => {
@@ -650,9 +664,16 @@ function App() {
         return;
       }
 
-      await runTx("Depositing liquidity", async () => {
-        return contracts!.liquidityPool.depositLiquidity(inputAmount);
-      });
+      await runTx(
+        "Depositing liquidity",
+        async () => {
+          return contracts!.liquidityPool.depositLiquidity(inputAmount);
+        },
+        {
+          event: "LiquidityDeposited",
+          data: { amount: `${depositLiquidityInput} MockUSDT` },
+        }
+      );
     } catch (error: any) {
       console.error(error);
       setStatus(
@@ -723,9 +744,21 @@ function App() {
         return;
       }
 
-      await runTx("Withdrawing liquidity by LP tokens", async () => {
-        return contracts!.liquidityPool.withdrawLiquidity(inputShares);
-      });
+      await runTx(
+        "Withdrawing liquidity by LP tokens",
+        async () => {
+          return contracts!.liquidityPool.withdrawLiquidity(inputShares);
+        },
+        {
+          event: "LiquidityWithdrawn",
+          data: {
+            lpTokensBurned: `${withdrawLiquidityInput} LPT`,
+            expectedWithdrawAmount: `${formatUSDT(
+              expectedWithdrawAmount
+            )} MockUSDT`,
+          },
+        }
+      );
     } catch (error: any) {
       console.error(error);
       setStatus(
@@ -1156,6 +1189,8 @@ function App() {
                   "Repaid",
                   "CollateralWithdrawn",
                   "Liquidated",
+                  "LiquidityDeposited",
+                  "LiquidityWithdrawn",
                 ] as const
               ).map((f) => (
                 <button
@@ -1166,9 +1201,13 @@ function App() {
                   onClick={() => setHistoryFilter(f)}
                 >
                   {f === "CollateralDeposited"
-                    ? "Deposited"
+                    ? "Collateral In"
                     : f === "CollateralWithdrawn"
-                    ? "Withdrawn"
+                    ? "Collateral Out"
+                    : f === "LiquidityDeposited"
+                    ? "Liquidity In"
+                    : f === "LiquidityWithdrawn"
+                    ? "Liquidity Out"
                     : f}
                 </button>
               ))}
