@@ -3,7 +3,7 @@ import { network } from "hardhat";
 const ONE_USDT = 10n ** 6n;
 
 async function main() {
-  const { ethers } = await network.create();
+  const { ethers } = await network.create({ network: "localhost" });
 
   const [deployer, liquidityProvider, borrower, liquidator] =
     await ethers.getSigners();
