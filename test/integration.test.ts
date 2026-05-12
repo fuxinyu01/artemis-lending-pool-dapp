@@ -107,6 +107,10 @@ describe("Integration flow", function () {
       lpDepositAmount - borrowAmount
     );
 
+    expect(await lendingPool.getBorrowersCount()).to.equal(1n);
+    expect(await lendingPool.getBorrowerAt(0)).to.equal(borrower.address);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(true);
+
     const positionAfterBorrow = await lendingPool.positions(borrower.address);
 
     expect(positionAfterBorrow.collateralETH).to.equal(ONE_ETH);
@@ -133,6 +137,12 @@ describe("Integration flow", function () {
     expect(positionAfterRepay.collateralETH).to.equal(ONE_ETH);
     expect(positionAfterRepay.active).to.equal(true);
 
+    // Borrower has no active debt after full repayment, so they are removed
+    // from the active borrower list.
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
+    expect(await lendingPool.getAllBorrowers()).to.deep.equal([]);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(false);
+
     await lendingPool.connect(borrower).withdrawCollateral(ONE_ETH);
 
     const positionAfterWithdraw = await lendingPool.positions(borrower.address);
@@ -157,7 +167,7 @@ describe("Integration flow", function () {
 
     const lpDepositAmount = 5_000n * ONE_USDT;
     const borrowAmount = 1_000n * ONE_USDT;
-    const liquidationRepayAmount = 500n * ONE_USDT;
+    const liquidationRepayAmount = 525n * ONE_USDT;
 
     await depositLiquidity(lp1, lpDepositAmount);
 
@@ -166,12 +176,16 @@ describe("Integration flow", function () {
     expect(await lendingPool.isLiquidatable(borrower.address)).to.equal(false);
 
     // ETH price drops from $2000 to $1000.
-    // Borrowed value = $1000.
-    // Liquidation threshold = 120%, so required collateral = $1200.
+    // Total debt = principal 1000 + 5% interest = 1050.
+    // Liquidation threshold = 120%, so required collateral = $1260.
     // Current collateral value = $1000, so the position becomes liquidatable.
     await mockPriceOracle.setETHPrice(1000n * 10n ** 8n);
 
     expect(await lendingPool.isLiquidatable(borrower.address)).to.equal(true);
+
+    expect(
+      await lendingPool.getMaxLiquidationRepayment(borrower.address)
+    ).to.equal(liquidationRepayAmount);
 
     await mockUSDT
       .connect(liquidator)
@@ -185,23 +199,106 @@ describe("Integration flow", function () {
       borrower.address
     );
 
+    // Liquidator pays 525 MockUSDT, which corresponds to 500 principal
+    // plus 25 interest. borrowedAmount records only remaining principal.
     expect(positionAfterLiquidation.borrowedAmount).to.equal(
       500n * ONE_USDT
     );
 
-    // Liquidator repays 500 MockUSDT principal.
-    // Liquidation bonus = 5%.
-    // Collateral seized value = $500 * 1.05 = $525.
+    // Collateral seized is based on actual repayment amount plus liquidation bonus:
+    // repayment value = $525.
+    // liquidation bonus = 5%.
+    // collateral seized value = 525 * 1.05 = $551.25.
     // ETH price = $1000.
-    // Collateral seized = 0.525 ETH.
-    // Borrower collateral left = 1 - 0.525 = 0.475 ETH.
+    // collateral seized = 0.55125 ETH.
+    // borrower collateral left = 1 - 0.55125 = 0.44875 ETH.
     expect(positionAfterLiquidation.collateralETH).to.equal(
-      475000000000000000n
+      448750000000000000n
     );
 
     expect(await liquidityPool.availableLiquidity()).to.equal(
       lpDepositAmount - borrowAmount + liquidationRepayAmount
     );
+
+    // Partial liquidation leaves active principal debt, so borrower remains active.
+    expect(await lendingPool.getBorrowersCount()).to.equal(1n);
+    expect(await lendingPool.getBorrowerAt(0)).to.equal(borrower.address);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(true);
+  });
+
+  it("runs full liquidation for small debt after ETH price drops", async function () {
+    const {
+      lp1,
+      borrower,
+      liquidator,
+      mockUSDT,
+      mockPriceOracle,
+      liquidityPool,
+      lendingPool,
+      depositLiquidity,
+      borrowerDepositAndBorrow,
+    } = await deployIntegrationFixture();
+
+    const lpDepositAmount = 5_000n * ONE_USDT;
+    const smallBorrowAmount = 20n * ONE_USDT;
+    const fullLiquidationRepayAmount = 21n * ONE_USDT;
+
+    await depositLiquidity(lp1, lpDepositAmount);
+
+    await borrowerDepositAndBorrow(ONE_ETH, smallBorrowAmount);
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(1n);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(true);
+
+    // Principal debt = 20.
+    // Total debt including interest = 21.
+    // Liquidation threshold = 21 * 120% = 25.2.
+    // ETH price = $25, so collateral value = $25.
+    // Therefore the position is liquidatable.
+    await mockPriceOracle.setETHPrice(25n * 10n ** 8n);
+
+    expect(await lendingPool.isLiquidatable(borrower.address)).to.equal(true);
+
+    expect(
+      await lendingPool.getMaxLiquidationPrincipal(borrower.address)
+    ).to.equal(20n * ONE_USDT);
+
+    expect(
+      await lendingPool.getMaxLiquidationRepayment(borrower.address)
+    ).to.equal(fullLiquidationRepayAmount);
+
+    await mockUSDT
+      .connect(liquidator)
+      .approve(await liquidityPool.getAddress(), fullLiquidationRepayAmount);
+
+    await lendingPool
+      .connect(liquidator)
+      .liquidate(borrower.address, fullLiquidationRepayAmount);
+
+    const positionAfterLiquidation = await lendingPool.positions(
+      borrower.address
+    );
+
+    expect(positionAfterLiquidation.borrowedAmount).to.equal(0n);
+
+    // Liquidator repays 21 MockUSDT.
+    // Liquidation bonus = 5%.
+    // Collateral seized value = 21 * 1.05 = $22.05.
+    // ETH price = $25.
+    // Collateral seized = 22.05 / 25 = 0.882 ETH.
+    // Borrower collateral left = 1 - 0.882 = 0.118 ETH.
+    expect(positionAfterLiquidation.collateralETH).to.equal(
+      118000000000000000n
+    );
+
+    expect(await liquidityPool.availableLiquidity()).to.equal(
+      lpDepositAmount - smallBorrowAmount + fullLiquidationRepayAmount
+    );
+
+    // Full liquidation clears the debt, so borrower is removed from active borrowers.
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
+    expect(await lendingPool.getAllBorrowers()).to.deep.equal([]);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(false);
   });
 
   it("prevents LP from withdrawing unavailable liquidity while active loans exist", async function () {
@@ -271,6 +368,8 @@ describe("Integration flow", function () {
     expect(await liquidityPool.availableLiquidity()).to.equal(
       2_050n * ONE_USDT
     );
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
 
     // LP1 owns 50% of LP tokens, so withdrawing all LP1 shares should return 1025.
     await liquidityPool.connect(lp1).withdrawLiquidity(lp1Deposit);

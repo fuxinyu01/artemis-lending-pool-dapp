@@ -183,6 +183,22 @@ describe("LendingPool", function () {
     );
   });
 
+  it("calculates interest helper functions correctly", async function () {
+    const { lendingPool } = await deployLendingPoolFixture();
+
+    expect(await lendingPool.getInterestAmount(1_000n * ONE_USDT)).to.equal(
+      50n * ONE_USDT
+    );
+
+    expect(await lendingPool.getAmountWithInterest(1_000n * ONE_USDT)).to.equal(
+      1_050n * ONE_USDT
+    );
+
+    expect(
+      await lendingPool.getPrincipalFromRepayment(525n * ONE_USDT)
+    ).to.equal(500n * ONE_USDT);
+  });
+
   it("returns zero borrowers before any borrow action", async function () {
     const { lendingPool } = await deployLendingPoolFixture();
 
@@ -207,6 +223,7 @@ describe("LendingPool", function () {
 
     expect(await lendingPool.getBorrowersCount()).to.equal(1n);
     expect(await lendingPool.getBorrowerAt(0)).to.equal(borrower.address);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(true);
 
     const allBorrowers = await lendingPool.getAllBorrowers();
 
@@ -214,7 +231,7 @@ describe("LendingPool", function () {
     expect(allBorrowers[0]).to.equal(borrower.address);
   });
 
-  it("does not duplicate the same borrower in borrowers list", async function () {
+  it("does not duplicate the same borrower in active borrower list", async function () {
     const { borrower, lendingPool, fundLiquidity } =
       await deployLendingPoolFixture();
 
@@ -237,6 +254,85 @@ describe("LendingPool", function () {
 
     expect(allBorrowers.length).to.equal(1);
     expect(allBorrowers[0]).to.equal(borrower.address);
+  });
+
+  it("removes borrower from active borrower list after full repayment", async function () {
+    const {
+      borrower,
+      mockUSDT,
+      liquidityPool,
+      lendingPool,
+      fundLiquidity,
+    } = await deployLendingPoolFixture();
+
+    const liquidityAmount = 5_000n * ONE_USDT;
+    const borrowAmount = 1_000n * ONE_USDT;
+    const interestAmount = 50n * ONE_USDT;
+    const repaymentAmount = 1_050n * ONE_USDT;
+
+    await fundLiquidity(liquidityAmount);
+
+    await lendingPool
+      .connect(borrower)
+      .depositCollateral({ value: ONE_ETH });
+
+    await lendingPool.connect(borrower).borrow(borrowAmount);
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(1n);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(true);
+
+    await mockUSDT.mint(borrower.address, interestAmount);
+
+    await mockUSDT
+      .connect(borrower)
+      .approve(await liquidityPool.getAddress(), repaymentAmount);
+
+    await lendingPool.connect(borrower).repay();
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
+    expect(await lendingPool.getAllBorrowers()).to.deep.equal([]);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(false);
+  });
+
+  it("allows borrower to re-enter active borrower list after repaying and borrowing again", async function () {
+    const {
+      borrower,
+      mockUSDT,
+      liquidityPool,
+      lendingPool,
+      fundLiquidity,
+    } = await deployLendingPoolFixture();
+
+    const liquidityAmount = 5_000n * ONE_USDT;
+    const firstBorrow = 500n * ONE_USDT;
+    const firstInterest = 25n * ONE_USDT;
+    const firstRepayment = 525n * ONE_USDT;
+    const secondBorrow = 300n * ONE_USDT;
+
+    await fundLiquidity(liquidityAmount);
+
+    await lendingPool
+      .connect(borrower)
+      .depositCollateral({ value: ONE_ETH });
+
+    await lendingPool.connect(borrower).borrow(firstBorrow);
+
+    await mockUSDT.mint(borrower.address, firstInterest);
+
+    await mockUSDT
+      .connect(borrower)
+      .approve(await liquidityPool.getAddress(), firstRepayment);
+
+    await lendingPool.connect(borrower).repay();
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(false);
+
+    await lendingPool.connect(borrower).borrow(secondBorrow);
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(1n);
+    expect(await lendingPool.getBorrowerAt(0)).to.equal(borrower.address);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(true);
   });
 
   it("reverts when getBorrowerAt index is out of range", async function () {
@@ -332,6 +428,7 @@ describe("LendingPool", function () {
     expect(await liquidityPool.availableLiquidity()).to.equal(
       liquidityAmount + interestAmount
     );
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
   });
 
   it("allows borrower to withdraw collateral after full repayment", async function () {
@@ -371,6 +468,7 @@ describe("LendingPool", function () {
     expect(position.collateralETH).to.equal(0n);
     expect(position.borrowedAmount).to.equal(0n);
     expect(position.active).to.equal(false);
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
   });
 
   it("does not allow withdrawing too much collateral while debt exists", async function () {
@@ -436,10 +534,66 @@ describe("LendingPool", function () {
 
     expect(await lendingPool.isLiquidatable(borrower.address)).to.equal(false);
 
-    // Drop ETH price from $2000 to $1000.
+    // Liquidation check uses total debt including 5% interest.
+    // Debt value = 1050. Required at 120% = 1260.
+    // Drop ETH price from $2000 to $1000, collateral value = 1000.
     await mockPriceOracle.setETHPrice(1000n * 10n ** 8n);
 
     expect(await lendingPool.isLiquidatable(borrower.address)).to.equal(true);
+  });
+
+  it("calculates max liquidation repayment with close factor and interest", async function () {
+    const { borrower, lendingPool, fundLiquidity } =
+      await deployLendingPoolFixture();
+
+    const liquidityAmount = 5_000n * ONE_USDT;
+    const borrowAmount = 1_000n * ONE_USDT;
+
+    await fundLiquidity(liquidityAmount);
+
+    await lendingPool
+      .connect(borrower)
+      .depositCollateral({ value: ONE_ETH });
+
+    await lendingPool.connect(borrower).borrow(borrowAmount);
+
+    // Principal debt = 1000.
+    // Close factor = 50%, so max principal repay = 500.
+    // Interest = 5%, so max liquidation repayment = 525.
+    expect(
+      await lendingPool.getMaxLiquidationPrincipal(borrower.address)
+    ).to.equal(500n * ONE_USDT);
+
+    expect(
+      await lendingPool.getMaxLiquidationRepayment(borrower.address)
+    ).to.equal(525n * ONE_USDT);
+  });
+
+  it("calculates max liquidation repayment as full debt when debt is small", async function () {
+    const { borrower, lendingPool, fundLiquidity } =
+      await deployLendingPoolFixture();
+
+    const liquidityAmount = 5_000n * ONE_USDT;
+    const smallBorrowAmount = 20n * ONE_USDT;
+
+    await fundLiquidity(liquidityAmount);
+
+    await lendingPool
+      .connect(borrower)
+      .depositCollateral({ value: ONE_ETH });
+
+    await lendingPool.connect(borrower).borrow(smallBorrowAmount);
+
+    // Principal debt = 20, which is at the small-debt threshold.
+    // Full principal can be repaid.
+    // Interest = 5%, so max liquidation repayment = 21.
+    expect(
+      await lendingPool.getMaxLiquidationPrincipal(borrower.address)
+    ).to.equal(20n * ONE_USDT);
+
+    expect(
+      await lendingPool.getMaxLiquidationRepayment(borrower.address)
+    ).to.equal(21n * ONE_USDT);
   });
 
   it("does not allow liquidation of a healthy position", async function () {
@@ -455,7 +609,7 @@ describe("LendingPool", function () {
 
     const liquidityAmount = 5_000n * ONE_USDT;
     const borrowAmount = 1_000n * ONE_USDT;
-    const repayAmount = 500n * ONE_USDT;
+    const repayAmount = 525n * ONE_USDT;
 
     await fundLiquidity(liquidityAmount);
 
@@ -474,7 +628,7 @@ describe("LendingPool", function () {
     ).to.be.revert(ethers);
   });
 
-  it("allows liquidation after ETH price drops", async function () {
+  it("allows liquidation after ETH price drops, including corresponding interest", async function () {
     const {
       borrower,
       liquidator,
@@ -487,7 +641,7 @@ describe("LendingPool", function () {
 
     const liquidityAmount = 5_000n * ONE_USDT;
     const borrowAmount = 1_000n * ONE_USDT;
-    const repayAmount = 500n * ONE_USDT;
+    const repayAmountWithInterest = 525n * ONE_USDT;
 
     await fundLiquidity(liquidityAmount);
 
@@ -501,27 +655,34 @@ describe("LendingPool", function () {
 
     await mockUSDT
       .connect(liquidator)
-      .approve(await liquidityPool.getAddress(), repayAmount);
+      .approve(await liquidityPool.getAddress(), repayAmountWithInterest);
 
     await lendingPool
       .connect(liquidator)
-      .liquidate(borrower.address, repayAmount);
+      .liquidate(borrower.address, repayAmountWithInterest);
 
     const position = await lendingPool.positions(borrower.address);
 
+    // Liquidator pays 525 MockUSDT, which corresponds to:
+    // principal repaid = 525 / 1.05 = 500.
     expect(position.borrowedAmount).to.equal(500n * ONE_USDT);
 
-    // Liquidator repays 500 MockUSDT principal.
-    // With 5% liquidation bonus, collateral seized = $525.
-    // ETH price after drop = $1000, so collateral seized = 0.525 ETH.
-    expect(position.collateralETH).to.equal(475000000000000000n);
+    // Collateral seized is based on actual repayment amount plus liquidation bonus:
+    // repay value = $525.
+    // liquidation bonus = 5%.
+    // seized value = 525 * 105% = $551.25.
+    // ETH price = $1000, so collateral seized = 0.55125 ETH.
+    expect(position.collateralETH).to.equal(448750000000000000n);
 
     expect(await liquidityPool.availableLiquidity()).to.equal(
-      liquidityAmount - borrowAmount + repayAmount
+      liquidityAmount - borrowAmount + repayAmountWithInterest
     );
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(1n);
+    expect(await lendingPool.getBorrowerAt(0)).to.equal(borrower.address);
   });
 
-  it("caps liquidation repayment by the close factor", async function () {
+  it("caps liquidation repayment by the close factor using repayment amount with interest", async function () {
     const {
       borrower,
       liquidator,
@@ -535,6 +696,7 @@ describe("LendingPool", function () {
     const liquidityAmount = 5_000n * ONE_USDT;
     const borrowAmount = 1_000n * ONE_USDT;
     const attemptedRepayAmount = 800n * ONE_USDT;
+    const cappedRepaymentWithInterest = 525n * ONE_USDT;
 
     await fundLiquidity(liquidityAmount);
 
@@ -556,8 +718,118 @@ describe("LendingPool", function () {
 
     const position = await lendingPool.positions(borrower.address);
 
-    // CLOSE_FACTOR = 50%, so even though the liquidator tries to repay 800,
-    // only 500 is actually repaid.
+    // CLOSE_FACTOR = 50%.
+    // Max principal repaid = 500.
+    // Max liquidation repayment including 5% interest = 525.
+    // So even though the liquidator tries to pay 800, only 525 is actually collected.
     expect(position.borrowedAmount).to.equal(500n * ONE_USDT);
+
+    expect(await liquidityPool.availableLiquidity()).to.equal(
+      liquidityAmount - borrowAmount + cappedRepaymentWithInterest
+    );
+  });
+
+  it("allows full liquidation when remaining principal debt is at or below the small-debt threshold", async function () {
+    const {
+      borrower,
+      liquidator,
+      mockUSDT,
+      mockPriceOracle,
+      liquidityPool,
+      lendingPool,
+      fundLiquidity,
+    } = await deployLendingPoolFixture();
+
+    const liquidityAmount = 5_000n * ONE_USDT;
+    const smallBorrowAmount = 20n * ONE_USDT;
+    const fullLiquidationRepayment = 21n * ONE_USDT;
+
+    await fundLiquidity(liquidityAmount);
+
+    await lendingPool
+      .connect(borrower)
+      .depositCollateral({ value: ONE_ETH });
+
+    await lendingPool.connect(borrower).borrow(smallBorrowAmount);
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(1n);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(true);
+
+    // Total debt including interest = 21.
+    // Liquidation threshold at 120% = 25.2.
+    // ETH price = $25 gives collateral value = $25, so the position is liquidatable.
+    await mockPriceOracle.setETHPrice(25n * 10n ** 8n);
+
+    expect(await lendingPool.isLiquidatable(borrower.address)).to.equal(true);
+
+    await mockUSDT
+      .connect(liquidator)
+      .approve(await liquidityPool.getAddress(), fullLiquidationRepayment);
+
+    await lendingPool
+      .connect(liquidator)
+      .liquidate(borrower.address, fullLiquidationRepayment);
+
+    const position = await lendingPool.positions(borrower.address);
+
+    expect(position.borrowedAmount).to.equal(0n);
+
+    // Liquidator repays 21 MockUSDT.
+    // With 5% liquidation bonus, seized value = 21 * 105% = $22.05.
+    // ETH price = $25, so collateral seized = 22.05 / 25 = 0.882 ETH.
+    expect(position.collateralETH).to.equal(118000000000000000n);
+
+    expect(await liquidityPool.availableLiquidity()).to.equal(
+      liquidityAmount - smallBorrowAmount + fullLiquidationRepayment
+    );
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
+    expect(await lendingPool.getAllBorrowers()).to.deep.equal([]);
+    expect(await lendingPool.borrowerTracked(borrower.address)).to.equal(false);
+  });
+
+  it("caps liquidation to full debt when input exceeds max repayment for small debt", async function () {
+    const {
+      borrower,
+      liquidator,
+      mockUSDT,
+      mockPriceOracle,
+      liquidityPool,
+      lendingPool,
+      fundLiquidity,
+    } = await deployLendingPoolFixture();
+
+    const liquidityAmount = 5_000n * ONE_USDT;
+    const smallBorrowAmount = 20n * ONE_USDT;
+    const attemptedRepayAmount = 100n * ONE_USDT;
+    const cappedRepaymentWithInterest = 21n * ONE_USDT;
+
+    await fundLiquidity(liquidityAmount);
+
+    await lendingPool
+      .connect(borrower)
+      .depositCollateral({ value: ONE_ETH });
+
+    await lendingPool.connect(borrower).borrow(smallBorrowAmount);
+
+    await mockPriceOracle.setETHPrice(25n * 10n ** 8n);
+
+    await mockUSDT
+      .connect(liquidator)
+      .approve(await liquidityPool.getAddress(), attemptedRepayAmount);
+
+    await lendingPool
+      .connect(liquidator)
+      .liquidate(borrower.address, attemptedRepayAmount);
+
+    const position = await lendingPool.positions(borrower.address);
+
+    expect(position.borrowedAmount).to.equal(0n);
+
+    expect(await liquidityPool.availableLiquidity()).to.equal(
+      liquidityAmount - smallBorrowAmount + cappedRepaymentWithInterest
+    );
+
+    expect(await lendingPool.getBorrowersCount()).to.equal(0n);
   });
 });

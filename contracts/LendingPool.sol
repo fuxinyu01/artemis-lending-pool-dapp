@@ -31,7 +31,7 @@ contract LendingPool is ReentrancyGuard {
     uint256 public constant COLLATERAL_RATIO = 150;
 
     /// @notice Liquidation threshold = 120%.
-    ///         If collateral value falls below 120% of borrowed value, the position is liquidatable.
+    ///         If collateral value falls below 120% of debt value, the position is liquidatable.
     uint256 public constant LIQUIDATION_THRESHOLD = 120;
 
     /// @notice Simple fixed interest rate for this prototype.
@@ -41,25 +41,32 @@ contract LendingPool is ReentrancyGuard {
     /// @notice Liquidator receives 5% extra collateral value as incentive.
     uint256 public constant LIQUIDATION_BONUS = 5;
 
-    /// @notice Liquidator can repay at most 50% of the borrower's debt in one liquidation.
+    /// @notice Liquidator can repay at most 50% of the borrower's principal debt in one liquidation.
     uint256 public constant CLOSE_FACTOR = 50;
+
+    /// @notice If remaining principal debt is small, the liquidator can fully close the position.
+    /// @dev MockUSDT uses 6 decimals, so this equals 20 MockUSDT.
+    uint256 public constant MIN_DEBT_FOR_CLOSE_FACTOR = 20 * 10 ** 6;
 
     /// @notice Borrower position.
     struct Position {
         uint256 collateralETH; // ETH collateral in wei
-        uint256 borrowedAmount; // MockUSDT borrowed amount, using 6 decimals
+        uint256 borrowedAmount; // MockUSDT principal borrowed amount, using 6 decimals
         bool active;
     }
 
     /// @notice Maps borrower address to borrowing position.
     mapping(address => Position) public positions;
 
-    /// @notice List of borrowers tracked for prototype-level total loan value calculation.
-    /// @dev This is acceptable for a small prototype but not suitable for a large production protocol.
-    address[] public borrowers;
+    /// @notice Active borrowers with outstanding principal debt.
+    /// @dev This is still a prototype-level on-chain list, but it no longer stores historical borrowers.
+    address[] private activeBorrowers;
 
-    /// @notice Tracks whether an address has already been added to borrowers.
+    /// @notice Tracks whether an address is currently in the active borrower list.
     mapping(address => bool) public borrowerTracked;
+
+    /// @notice Stores each active borrower's index in activeBorrowers for efficient removal.
+    mapping(address => uint256) private borrowerIndex;
 
     event CollateralDeposited(address indexed borrower, uint256 amount);
 
@@ -108,7 +115,11 @@ contract LendingPool is ReentrancyGuard {
 
     /// @notice Returns the borrower's collateral value in USD with 8 decimals.
     /// @dev Current prototype only uses ETH collateral, so USDC amount is set to 0.
-    function getCollateralValueUSD(address borrower) public view returns (uint256) {
+    function getCollateralValueUSD(address borrower)
+        public
+        view
+        returns (uint256)
+    {
         Position memory position = positions[borrower];
 
         return priceOracle.getCollateralValue(position.collateralETH, 0);
@@ -116,13 +127,45 @@ contract LendingPool is ReentrancyGuard {
 
     /// @notice Converts MockUSDT amount with 6 decimals to USD value with 8 decimals.
     /// @dev MockUSDT is treated as a USD stablecoin: 1 MockUSDT = 1 USD.
-    function borrowedAmountToUSDValue(uint256 amount) public pure returns (uint256) {
+    function borrowedAmountToUSDValue(uint256 amount)
+        public
+        pure
+        returns (uint256)
+    {
         return amount * 1e2;
     }
 
     /// @notice Converts USD value with 8 decimals to MockUSDT amount with 6 decimals.
-    function usdValueToBorrowAmount(uint256 usdValue) public pure returns (uint256) {
+    function usdValueToBorrowAmount(uint256 usdValue)
+        public
+        pure
+        returns (uint256)
+    {
         return usdValue / 1e2;
+    }
+
+    /// @notice Returns the fixed interest for a principal amount.
+    function getInterestAmount(uint256 principal) public pure returns (uint256) {
+        return (principal * INTEREST_RATE) / 100;
+    }
+
+    /// @notice Returns principal plus fixed interest for a principal amount.
+    function getAmountWithInterest(uint256 principal)
+        public
+        pure
+        returns (uint256)
+    {
+        return principal + getInterestAmount(principal);
+    }
+
+    /// @notice Converts a repayment amount including interest back to its principal portion.
+    /// @dev Example: repayment 1050 with 5% interest corresponds to principal 1000.
+    function getPrincipalFromRepayment(uint256 repaymentAmount)
+        public
+        pure
+        returns (uint256)
+    {
+        return (repaymentAmount * 100) / (100 + INTEREST_RATE);
     }
 
     /// @notice Returns the maximum amount of MockUSDT the borrower can borrow.
@@ -134,6 +177,36 @@ contract LendingPool is ReentrancyGuard {
             (collateralValueUSD * 100) / COLLATERAL_RATIO;
 
         return usdValueToBorrowAmount(maxBorrowValueUSD);
+    }
+
+    /// @dev Adds a borrower to the active borrower list if not already included.
+    function _addActiveBorrower(address borrower) internal {
+        if (!borrowerTracked[borrower]) {
+            borrowerIndex[borrower] = activeBorrowers.length;
+            activeBorrowers.push(borrower);
+            borrowerTracked[borrower] = true;
+        }
+    }
+
+    /// @dev Removes a borrower from the active borrower list using swap-and-pop.
+    function _removeActiveBorrower(address borrower) internal {
+        if (!borrowerTracked[borrower]) {
+            return;
+        }
+
+        uint256 index = borrowerIndex[borrower];
+        uint256 lastIndex = activeBorrowers.length - 1;
+
+        if (index != lastIndex) {
+            address lastBorrower = activeBorrowers[lastIndex];
+            activeBorrowers[index] = lastBorrower;
+            borrowerIndex[lastBorrower] = index;
+        }
+
+        activeBorrowers.pop();
+
+        delete borrowerIndex[borrower];
+        borrowerTracked[borrower] = false;
     }
 
     /// @notice Borrow MockUSDT based on deposited ETH collateral.
@@ -155,10 +228,7 @@ contract LendingPool is ReentrancyGuard {
         position.borrowedAmount += amount;
         position.active = true;
 
-        if (!borrowerTracked[msg.sender]) {
-            borrowers.push(msg.sender);
-            borrowerTracked[msg.sender] = true;
-        }
+        _addActiveBorrower(msg.sender);
 
         liquidityPool.transferToBorrower(msg.sender, amount);
 
@@ -169,44 +239,39 @@ contract LendingPool is ReentrancyGuard {
     /// @dev Interest is simplified for this prototype and does not depend on time.
     function getRepaymentAmount(address borrower) public view returns (uint256) {
         uint256 principal = positions[borrower].borrowedAmount;
-        uint256 interest = (principal * INTEREST_RATE) / 100;
 
-        return principal + interest;
+        return getAmountWithInterest(principal);
     }
 
     /// @notice Returns the total current value of all active loans, including fixed interest.
-    /// @dev This loops through all tracked borrowers, which is acceptable for this prototype
+    /// @dev This loops through active borrowers only. It is acceptable for this prototype
     ///      but not suitable for a large production protocol.
     function currentLoanValue() external view returns (uint256) {
         uint256 total = 0;
 
-        for (uint256 i = 0; i < borrowers.length; i++) {
-            address borrower = borrowers[i];
-
-            if (positions[borrower].borrowedAmount > 0) {
-                total += getRepaymentAmount(borrower);
-            }
+        for (uint256 i = 0; i < activeBorrowers.length; i++) {
+            total += getRepaymentAmount(activeBorrowers[i]);
         }
 
         return total;
     }
 
-    /// @notice Returns the number of tracked borrowers.
+    /// @notice Returns the number of active borrowers with outstanding debt.
     function getBorrowersCount() external view returns (uint256) {
-        return borrowers.length;
+        return activeBorrowers.length;
     }
 
-    /// @notice Returns a tracked borrower address by index.
+    /// @notice Returns an active borrower address by index.
     function getBorrowerAt(uint256 index) external view returns (address) {
-        require(index < borrowers.length, "Borrower index out of range");
+        require(index < activeBorrowers.length, "Borrower index out of range");
 
-        return borrowers[index];
+        return activeBorrowers[index];
     }
 
-    /// @notice Returns all tracked borrower addresses.
+    /// @notice Returns all active borrower addresses.
     /// @dev This is acceptable for a small prototype/demo, but not suitable for a large production protocol.
     function getAllBorrowers() external view returns (address[] memory) {
-        return borrowers;
+        return activeBorrowers;
     }
 
     /// @notice Returns borrower information for frontend display.
@@ -240,12 +305,14 @@ contract LendingPool is ReentrancyGuard {
         require(position.borrowedAmount > 0, "No active loan");
 
         uint256 principal = position.borrowedAmount;
-        uint256 interest = (principal * INTEREST_RATE) / 100;
+        uint256 interest = getInterestAmount(principal);
         uint256 repaymentAmount = principal + interest;
 
         liquidityPool.receiveRepayment(msg.sender, repaymentAmount);
 
         position.borrowedAmount = 0;
+
+        _removeActiveBorrower(msg.sender);
 
         if (position.collateralETH == 0) {
             position.active = false;
@@ -294,7 +361,11 @@ contract LendingPool is ReentrancyGuard {
     }
 
     /// @notice Returns the maximum ETH collateral that a borrower can withdraw while keeping the position healthy.
-    function getMaxWithdrawableCollateral(address borrower) public view returns (uint256) {
+    function getMaxWithdrawableCollateral(address borrower)
+        public
+        view
+        returns (uint256)
+    {
         Position memory position = positions[borrower];
 
         if (position.collateralETH == 0) {
@@ -326,6 +397,7 @@ contract LendingPool is ReentrancyGuard {
     }
 
     /// @notice Checks whether a borrower's position is eligible for liquidation.
+    /// @dev Liquidation threshold is based on total debt value including fixed interest.
     function isLiquidatable(address borrower) public view returns (bool) {
         Position memory position = positions[borrower];
 
@@ -335,38 +407,85 @@ contract LendingPool is ReentrancyGuard {
 
         uint256 collateralValueUSD = getCollateralValueUSD(borrower);
 
-        uint256 borrowedValueUSD =
-            borrowedAmountToUSDValue(position.borrowedAmount);
+        uint256 debtValueUSD =
+            borrowedAmountToUSDValue(getRepaymentAmount(borrower));
 
         uint256 requiredCollateralValueUSD =
-            (borrowedValueUSD * LIQUIDATION_THRESHOLD) / 100;
+            (debtValueUSD * LIQUIDATION_THRESHOLD) / 100;
 
         return collateralValueUSD < requiredCollateralValueUSD;
     }
 
+    /// @notice Returns the maximum principal amount that can be repaid in one liquidation.
+    /// @dev If the remaining principal debt is small, full liquidation is allowed.
+    function getMaxLiquidationPrincipal(address borrower)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 principalDebt = positions[borrower].borrowedAmount;
+
+        if (principalDebt == 0) {
+            return 0;
+        }
+
+        if (principalDebt <= MIN_DEBT_FOR_CLOSE_FACTOR) {
+            return principalDebt;
+        }
+
+        return (principalDebt * CLOSE_FACTOR) / 100;
+    }
+
+    /// @notice Returns the maximum liquidation repayment amount, including the corresponding fixed interest.
+    function getMaxLiquidationRepayment(address borrower)
+        public
+        view
+        returns (uint256)
+    {
+        uint256 maxPrincipalRepay = getMaxLiquidationPrincipal(borrower);
+
+        return getAmountWithInterest(maxPrincipalRepay);
+    }
+
     /// @notice Liquidate an under-collateralised position.
-    /// @dev The liquidator repays part of the borrower's borrowed principal and receives ETH collateral with a bonus.
-    ///      For this prototype, liquidation is based on principal only, while normal repayment includes fixed interest.
+    /// @dev The liquidator repays part of the borrower's total debt, including the corresponding 5% interest,
+    ///      and receives ETH collateral with a separate liquidation bonus.
+    ///      borrowedAmount remains the principal debt and is reduced by the corresponding principal portion.
+    ///      If the remaining principal debt is small, the position can be fully closed.
     ///      Liquidator must approve the LiquidityPool before calling this function.
     /// @param borrower The borrower whose position is being liquidated.
-    /// @param repayAmount The amount of MockUSDT debt the liquidator wants to repay, using 6 decimals.
-    function liquidate(address borrower, uint256 repayAmount) external nonReentrant {
+    /// @param repayAmount The amount of MockUSDT the liquidator pays, including the corresponding fixed interest, using 6 decimals.
+    function liquidate(address borrower, uint256 repayAmount)
+        external
+        nonReentrant
+    {
         require(isLiquidatable(borrower), "Position is not liquidatable");
         require(repayAmount > 0, "Repay amount must be greater than zero");
 
         Position storage position = positions[borrower];
 
-        uint256 maxRepayAmount =
-            (position.borrowedAmount * CLOSE_FACTOR) / 100;
+        uint256 maxPrincipalRepay = getMaxLiquidationPrincipal(borrower);
+        uint256 maxRepaymentAmount = getAmountWithInterest(maxPrincipalRepay);
 
-        if (repayAmount > maxRepayAmount) {
-            repayAmount = maxRepayAmount;
+        if (repayAmount > maxRepaymentAmount) {
+            repayAmount = maxRepaymentAmount;
         }
 
-        require(repayAmount <= position.borrowedAmount, "Repay amount exceeds debt");
+        uint256 principalRepaid;
 
-        uint256 repayValueUSD =
-            borrowedAmountToUSDValue(repayAmount);
+        if (repayAmount == maxRepaymentAmount) {
+            principalRepaid = maxPrincipalRepay;
+        } else {
+            principalRepaid = getPrincipalFromRepayment(repayAmount);
+        }
+
+        require(principalRepaid > 0, "Repay amount too small");
+        require(
+            principalRepaid <= position.borrowedAmount,
+            "Repay amount exceeds debt"
+        );
+
+        uint256 repayValueUSD = borrowedAmountToUSDValue(repayAmount);
 
         uint256 collateralValueWithBonusUSD =
             (repayValueUSD * (100 + LIQUIDATION_BONUS)) / 100;
@@ -383,8 +502,12 @@ contract LendingPool is ReentrancyGuard {
 
         liquidityPool.receiveRepayment(msg.sender, repayAmount);
 
-        position.borrowedAmount -= repayAmount;
+        position.borrowedAmount -= principalRepaid;
         position.collateralETH -= collateralToSeize;
+
+        if (position.borrowedAmount == 0) {
+            _removeActiveBorrower(borrower);
+        }
 
         if (position.borrowedAmount == 0 && position.collateralETH == 0) {
             position.active = false;
