@@ -19,6 +19,7 @@ export const lendingPoolAbi = [
 
   "function positions(address borrower) view returns (uint256 collateralETH, uint256 borrowedAmount, bool active)",
   "function getMaxBorrowAmount(address borrower) view returns (uint256)",
+  "function getMaxWithdrawableCollateral(address borrower) view returns (uint256)",
   "function getRepaymentAmount(address borrower) view returns (uint256)",
   "function isLiquidatable(address borrower) view returns (bool)",
 
@@ -27,11 +28,15 @@ export const lendingPoolAbi = [
   "function getAllBorrowers() view returns (address[])",
   "function getBorrowerSummary(address borrower) view returns (uint256 collateralETH, uint256 borrowedAmount, uint256 repaymentAmount, bool active, bool liquidatable)",
 
+  "function getMaxLiquidationPrincipal(address borrower) view returns (uint256)",
+  "function getMaxLiquidationRepayment(address borrower) view returns (uint256)",
+
   "function liquidate(address borrower, uint256 repayAmount) external",
 ] as const;
 
 export const lpTokenAbi = [
   "function balanceOf(address account) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
 ] as const;
 
 export const mockPriceOracleAbi = [
