@@ -15,6 +15,8 @@ interface AggregatorV3Interface {
             uint256 updatedAt,
             uint80 answeredInRound
         );
+
+    function decimals() external view returns (uint8);
 }
 
 /// @title PriceOracle
@@ -27,22 +29,21 @@ contract PriceOracle is IPriceOracle {
     AggregatorV3Interface private immutable usdcFeed;
 
     constructor(address ethFeedAddress, address usdcFeedAddress) {
+        require(ethFeedAddress != address(0), "PriceOracle: invalid ETH feed");
+        require(usdcFeedAddress != address(0), "PriceOracle: invalid USDC feed");
+
         ethFeed = AggregatorV3Interface(ethFeedAddress);
         usdcFeed = AggregatorV3Interface(usdcFeedAddress);
     }
 
     /// @inheritdoc IPriceOracle
     function getETHPrice() public view override returns (uint256 price) {
-        (, int256 answer, , , ) = ethFeed.latestRoundData();
-        require(answer > 0, "PriceOracle: invalid ETH price");
-        price = uint256(answer);
+        price = _getPrice(ethFeed);
     }
 
     /// @inheritdoc IPriceOracle
     function getUSDCPrice() public view override returns (uint256 price) {
-        (, int256 answer, , , ) = usdcFeed.latestRoundData();
-        require(answer > 0, "PriceOracle: invalid USDC price");
-        price = uint256(answer);
+        price = _getPrice(usdcFeed);
     }
 
     /// @inheritdoc IPriceOracle
@@ -53,5 +54,25 @@ contract PriceOracle is IPriceOracle {
         uint256 ethValue = (ethAmount * getETHPrice()) / 1e18;
         uint256 usdcValue = (usdcAmount * getUSDCPrice()) / 1e6;
         value = ethValue + usdcValue;
+    }
+
+    /// @dev Reads a Chainlink feed and normalises the answer to 8 decimals.
+    function _getPrice(
+        AggregatorV3Interface feed
+    ) internal view returns (uint256 price) {
+        (, int256 answer, , uint256 updatedAt, ) = feed.latestRoundData();
+
+        require(answer > 0, "PriceOracle: invalid price");
+        require(updatedAt > 0, "PriceOracle: stale price");
+
+        uint8 feedDecimals = feed.decimals();
+
+        if (feedDecimals == 8) {
+            price = uint256(answer);
+        } else if (feedDecimals > 8) {
+            price = uint256(answer) / (10 ** (feedDecimals - 8));
+        } else {
+            price = uint256(answer) * (10 ** (8 - feedDecimals));
+        }
     }
 }

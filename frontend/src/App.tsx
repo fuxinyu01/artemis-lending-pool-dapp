@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import "./App.css";
 
-import { addresses } from "./config/addresses";
+import { CONTRACT_ADDRESSES as addresses } from "./config/addresses";
 import {
   mockUSDTAbi,
   liquidityPoolAbi,
   lendingPoolAbi,
   lpTokenAbi,
-  mockPriceOracleAbi,
+  priceOracleAbi,
 } from "./abi/minimalAbis";
 import {
   checkBackendAvailable,
@@ -31,7 +31,7 @@ type Contracts = {
   liquidityPool: ethers.Contract;
   lendingPool: ethers.Contract;
   lpToken: ethers.Contract;
-  mockPriceOracle: ethers.Contract;
+  priceOracle: ethers.Contract;
 };
 
 type BorrowerRow = {
@@ -45,6 +45,8 @@ type BorrowerRow = {
   active: boolean;
   liquidatable: boolean;
 };
+
+const SEPOLIA_CHAIN_ID = "0xaa36a7";
 
 function toBigInt(value: any): bigint {
   return BigInt(value.toString());
@@ -112,8 +114,6 @@ function App() {
   const [selectedBorrower, setSelectedBorrower] = useState("");
   const [liquidationRepayInput, setLiquidationRepayInput] = useState("");
 
-  const [newEthPriceInput, setNewEthPriceInput] = useState("");
-
   const [ipfsHistory, setIpfsHistory] = useState<HistoryEntry[]>([]);
   const [ipfsUploading, setIpfsUploading] = useState(false);
   const [ipfsAvailable, setIpfsAvailable] = useState(false);
@@ -133,6 +133,33 @@ function App() {
     setEthPrice("-");
     setBorrowers([]);
     setSelectedBorrower("");
+  }
+
+  async function ensureCorrectNetwork() {
+    if (!window.ethereum) return false;
+
+    const chainId = await window.ethereum.request({
+      method: "eth_chainId",
+    });
+
+    if (addresses.network === "sepolia" && chainId !== SEPOLIA_CHAIN_ID) {
+      try {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: SEPOLIA_CHAIN_ID }],
+        });
+
+        return true;
+      } catch (error: any) {
+        const message = "Please switch MetaMask to Sepolia testnet.";
+        setStatus(message);
+        window.alert(message);
+        console.error(error);
+        return false;
+      }
+    }
+
+    return true;
   }
 
   function buildContracts(signer: ethers.Signer): Contracts {
@@ -156,9 +183,9 @@ function App() {
 
     const lpToken = new ethers.Contract(addresses.lpToken, lpTokenAbi, signer);
 
-    const mockPriceOracle = new ethers.Contract(
-      addresses.mockPriceOracle,
-      mockPriceOracleAbi,
+    const priceOracle = new ethers.Contract(
+      addresses.priceOracle,
+      priceOracleAbi,
       signer
     );
 
@@ -167,13 +194,19 @@ function App() {
       liquidityPool,
       lendingPool,
       lpToken,
-      mockPriceOracle,
+      priceOracle,
     };
   }
 
   async function initialiseWallet(requestAccounts = true) {
     if (!window.ethereum) {
       setStatus("MetaMask is not installed.");
+      return null;
+    }
+
+    const correctNetwork = await ensureCorrectNetwork();
+
+    if (!correctNetwork) {
       return null;
     }
 
@@ -206,8 +239,11 @@ function App() {
 
   async function connectWallet() {
     try {
-      await initialiseWallet(true);
-      setStatus("Wallet connected.");
+      const result = await initialiseWallet(true);
+
+      if (result) {
+        setStatus("Wallet connected.");
+      }
     } catch (error: any) {
       console.error(error);
       setStatus(
@@ -270,13 +306,8 @@ function App() {
   ) {
     if (!currentAccount || !currentContracts) return;
 
-    const {
-      mockUSDT,
-      liquidityPool,
-      lendingPool,
-      lpToken,
-      mockPriceOracle,
-    } = currentContracts;
+    const { mockUSDT, liquidityPool, lendingPool, lpToken, priceOracle } =
+      currentContracts;
 
     const usdt = toBigInt(await mockUSDT.balanceOf(currentAccount));
     setUsdtBalance(`${formatUSDT(usdt)} MockUSDT`);
@@ -317,7 +348,7 @@ function App() {
     const totalValue = toBigInt(await liquidityPool.totalPoolValue());
     setTotalPoolValue(`${formatUSDT(totalValue)} MockUSDT`);
 
-    const price = toBigInt(await mockPriceOracle.getETHPrice());
+    const price = toBigInt(await priceOracle.getETHPrice());
     setEthPrice(`$${formatUSD8(price)}`);
   }
 
@@ -839,13 +870,6 @@ function App() {
     );
   }
 
-  async function setETHPrice() {
-    await runTx("Updating ETH price", async () => {
-      const priceWith8Decimals = ethers.parseUnits(newEthPriceInput || "0", 8);
-      return contracts!.mockPriceOracle.setETHPrice(priceWith8Decimals);
-    });
-  }
-
   const selectedBorrowerRow = getSelectedBorrowerRow();
 
   const filteredHistory =
@@ -1113,29 +1137,6 @@ function App() {
             />
             <button onClick={approveLiquidation}>Approve Liquidation</button>
             <button onClick={liquidate}>Liquidate</button>
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-heading">
-            <div>
-              <h2>Oracle Controls</h2>
-              <p>Change ETH price locally to demonstrate liquidation.</p>
-            </div>
-          </div>
-
-          <div className="oracle-price">
-            <span className="label">Current ETH price</span>
-            <strong>{ethPrice}</strong>
-          </div>
-
-          <div className="form-row">
-            <input
-              value={newEthPriceInput}
-              onChange={(e) => setNewEthPriceInput(e.target.value)}
-              placeholder="New ETH price, e.g. 1000"
-            />
-            <button onClick={setETHPrice}>Set ETH Price</button>
           </div>
         </div>
       </section>

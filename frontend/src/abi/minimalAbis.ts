@@ -9,6 +9,7 @@ export const liquidityPoolAbi = [
   "function withdrawLiquidity(uint256 shares) external",
   "function availableLiquidity() view returns (uint256)",
   "function totalPoolValue() view returns (uint256)",
+  "function lpToken() view returns (address)",
 ] as const;
 
 export const lendingPoolAbi = [
@@ -39,7 +40,8 @@ export const lpTokenAbi = [
   "function totalSupply() view returns (uint256)",
 ] as const;
 
-export const mockPriceOracleAbi = [
+export const priceOracleAbi = [
   "function getETHPrice() view returns (uint256)",
-  "function setETHPrice(uint256 price) external",
+  "function getUSDCPrice() view returns (uint256)",
+  "function getCollateralValue(uint256 ethAmount, uint256 usdcAmount) view returns (uint256)",
 ] as const;
