@@ -11,10 +11,9 @@ import {
   priceOracleAbi,
 } from "./abi/minimalAbis";
 import {
-  isIPFSConfigured,
+  checkBackendAvailable,
   uploadToIPFS,
-  saveToHistory,
-  loadHistory,
+  fetchHistory,
   GATEWAY_URL,
   type TransactionRecord,
   type HistoryEntry,
@@ -117,6 +116,7 @@ function App() {
 
   const [ipfsHistory, setIpfsHistory] = useState<HistoryEntry[]>([]);
   const [ipfsUploading, setIpfsUploading] = useState(false);
+  const [ipfsAvailable, setIpfsAvailable] = useState(false);
   const [historyFilter, setHistoryFilter] = useState<EventName | "All">("All");
 
   function resetDisplayedState() {
@@ -222,7 +222,11 @@ function App() {
 
     setAccount(connectedAccount);
     setContracts(connectedContracts);
-    setIpfsHistory(loadHistory());
+    const available = await checkBackendAvailable();
+    setIpfsAvailable(available);
+    if (available) {
+      fetchHistory().then(setIpfsHistory).catch(console.error);
+    }
 
     await refreshState(connectedAccount, connectedContracts);
     await loadBorrowers(connectedContracts);
@@ -249,7 +253,10 @@ function App() {
   }
 
   useEffect(() => {
-    setIpfsHistory(loadHistory());
+    checkBackendAvailable().then((available) => {
+      setIpfsAvailable(available);
+      if (available) fetchHistory().then(setIpfsHistory).catch(console.error);
+    });
 
     if (!window.ethereum) return;
 
@@ -429,7 +436,7 @@ function App() {
       setStatus(`${label} completed.`);
       await refreshAll();
 
-      if (ipfsEvent && isIPFSConfigured()) {
+      if (ipfsEvent && ipfsAvailable) {
         setIpfsUploading(true);
 
         try {
@@ -442,19 +449,9 @@ function App() {
           };
 
           const cid = await uploadToIPFS(record);
-
-          saveToHistory({
-            cid,
-            event: record.event,
-            timestamp: record.timestamp,
-            txHash: record.txHash,
-            user: record.user,
-          });
-
-          setIpfsHistory(loadHistory());
-          setStatus(
-            `${label} completed. Saved to IPFS: ${cid.slice(0, 16)}...`
-          );
+          const updated = await fetchHistory();
+          setIpfsHistory(updated);
+          setStatus(`${label} completed. Saved to IPFS: ${cid.slice(0, 16)}...`);
         } catch (err: any) {
           console.error("IPFS upload failed:", err);
           setStatus(`${label} completed, but IPFS upload failed.`);
@@ -1149,9 +1146,9 @@ function App() {
           <div>
             <h2>Transaction History</h2>
             <p>
-              {isIPFSConfigured()
-                ? "Each transaction is permanently stored on IPFS via Pinata. Click a CID to view the raw JSON record."
-                : "Add VITE_PINATA_JWT to frontend/.env to enable IPFS transaction history."}
+              {ipfsAvailable
+                ? "Each transaction is permanently stored on IPFS via Pinata. History is shared across all users."
+                : "Start the IPFS backend (port 3001) to enable shared transaction history."}
             </p>
           </div>
 
@@ -1159,25 +1156,13 @@ function App() {
             {ipfsUploading && (
               <span className="badge info">Uploading to IPFS...</span>
             )}
-
-            {ipfsHistory.length > 0 && (
-              <button
-                className="secondary-button"
-                onClick={() => {
-                  localStorage.removeItem("artemis_ipfs_history");
-                  setIpfsHistory([]);
-                }}
-              >
-                Clear History
-              </button>
-            )}
           </div>
         </div>
 
-        {!isIPFSConfigured() ? (
+        {!ipfsAvailable ? (
           <div className="empty-notice">
-            IPFS not configured — add <code>VITE_PINATA_JWT</code> to{" "}
-            <code>frontend/.env</code> to enable.
+            IPFS backend not running — start it with{" "}
+            <code>cd backend && npm install && npm start</code>
           </div>
         ) : (
           <>
