@@ -123,15 +123,26 @@ MetaMask → three-dot menu → **Connected sites** → disconnect `localhost`
 
 ## IPFS Transaction History
 
-The frontend stores every transaction event (collateral deposit, borrow, repay, withdraw, liquidate) on IPFS via Pinata and displays a **Transaction History** panel with clickable CID links.
+Every transaction (collateral deposit, borrow, repay, withdraw, liquidate) is uploaded to IPFS via Pinata and shown in a shared **Transaction History** panel with event-type filters and clickable CID links. History is shared across all users — not stored per-browser.
 
-To enable, create `frontend/.env`:
+A small Express backend (`backend/`) handles all Pinata uploads so the JWT never reaches the browser.
+
+**Setup:** add `PINATA_JWT` and `PINATA_GATEWAY` to the root `.env` file (the backend reads from there):
 ```
-VITE_PINATA_JWT=your_pinata_jwt_here
-VITE_PINATA_GATEWAY=https://gateway.pinata.cloud
+PINATA_JWT=your_pinata_jwt_here
+PINATA_GATEWAY=https://gateway.pinata.cloud
 ```
 
-Without this file the app still works — IPFS history is simply disabled.
+**Manual start:**
+```bash
+cd backend
+npm install
+npm start   # runs on http://localhost:3001
+```
+
+**Docker:** the `ipfs-backend` service starts automatically with `docker compose up`.
+
+Without the backend running the app still works — the Transaction History panel shows a setup notice.
 
 ---
 
