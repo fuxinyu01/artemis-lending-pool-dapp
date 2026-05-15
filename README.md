@@ -1,216 +1,566 @@
-# Artemis Lending Pool
+# Artemis Lending Pool DApp
 
-A decentralised lending protocol built on Ethereum (Solidity + Hardhat), with a React frontend, a small Express backend for IPFS uploads, and Docker Compose for one-command local startup.
+A decentralised lending protocol built on Ethereum using Solidity, Hardhat, React, ethers.js, and Chainlink price feeds.
 
-**BCOLN FS26 — Group Artemis**
+This project simulates a simplified overcollateralised lending market where:
 
----
-
-## How It Works
-
-The protocol has three types of participants:
-
-- **Liquidity Providers** deposit MockUSDT into the `LiquidityPool` and receive LP tokens representing their share. They earn yield from borrower interest.
-- **Borrowers** deposit ETH as collateral into the `LendingPool` and borrow MockUSDT against it. They must maintain a 150% collateral ratio or face liquidation.
-- **Liquidators** repay the debt of undercollateralised borrowers and receive a 5% bonus on the collateral they claim.
-
-Every on-chain action (deposit, borrow, repay, withdraw, liquidate) is also uploaded to IPFS via a backend Express service and shown in a shared **Transaction History** panel in the UI.
+- Liquidity providers deposit stablecoins into a shared pool and earn yield
+- Borrowers lock ETH as collateral and borrow against it
+- Liquidators maintain protocol solvency by liquidating unhealthy positions
+- Every on-chain action can optionally be persisted to IPFS through a backend API
 
 ---
 
-## Architecture
+# Project Status & Branch Structure
 
-```
+## Important
+
+The repository currently uses **two primary working branches**:
+
+| Branch | Purpose |
+|---|---|
+| `main` | Configured for the **Sepolia deployment** using the live Chainlink price feed |
+| `Local_test_mock_oracle` | Contains the **fully local Hardhat demo environment** using the `MockPriceOracle` |
+
+### Which branch should you use?
+
+#### Use `main` if you want:
+- The Sepolia deployment configuration
+- Real Chainlink ETH/USD price feeds
+- Public testnet interaction
+- Production-style deployment behaviour
+
+#### Use `Local_test_mock_oracle` if you want:
+- Fully local development
+- A deterministic Hardhat environment
+- Manual oracle price manipulation for liquidation testing
+- The classroom/demo setup
+- Docker-based local testing
+
+---
+
+# Features
+
+## Lending Protocol
+
+- ETH-backed borrowing
+- Stablecoin liquidity pool
+- LP token issuance
+- Fixed interest borrowing
+- Collateral health checks
+- Liquidation mechanics
+- Borrow repayment flow
+- Withdrawal logic
+
+## Frontend
+
+- React + Vite frontend
+- MetaMask wallet integration
+- ethers.js v6 contract interaction
+- Live protocol dashboard
+- Shared transaction history panel
+
+## Backend
+
+- Express.js API server
+- Pinata IPFS integration
+- Shared transaction persistence
+- Secure server-side JWT handling
+
+## Smart Contract Infrastructure
+
+- Solidity smart contracts
+- Hardhat development environment
+- Local and Sepolia deployments
+- Chainlink oracle integration
+- Mock oracle support for testing
+
+---
+
+# Protocol Overview
+
+The protocol has three participant roles.
+
+## Liquidity Providers
+
+Liquidity providers:
+- Deposit MockUSDT into the liquidity pool
+- Receive LP tokens representing their pool share
+- Earn yield from borrower interest payments
+
+## Borrowers
+
+Borrowers:
+- Deposit ETH as collateral
+- Borrow MockUSDT against that collateral
+- Must maintain a healthy collateral ratio
+
+## Liquidators
+
+Liquidators:
+- Repay debt for undercollateralised borrowers
+- Receive discounted collateral plus a liquidation bonus
+
+---
+
+# Core Protocol Parameters
+
+| Parameter | Value |
+|---|---|
+| Minimum Collateral Ratio | 150% |
+| Liquidation Threshold | 120% |
+| Borrow Interest Rate | 5% |
+| Liquidation Bonus | 5% |
+
+---
+
+# Deployment Architectures
+
+The project currently supports two separate environments depending on the branch being used.
+
+---
+
+## Sepolia Architecture (`main` branch)
+
+The `main` branch is configured for deployment on the Sepolia Ethereum testnet using live Chainlink price feeds.
+
+### Components
+
+- React frontend
+- MetaMask wallet
+- ethers.js
+- Sepolia RPC provider
+- Chainlink ETH/USD Price Feed
+- LendingPool smart contracts
+- Express IPFS backend
+
+### Architecture Flow
+
+```text
 ┌─────────────────────────────────────────────────────────┐
 │                        Browser                          │
-│   React Frontend (Vite)  ←→  MetaMask (ethers.js v6)   │
+│                                                         │
+│   React Frontend  ←→  MetaMask  ←→  ethers.js           │
 │            │                                            │
-│            └──── HTTP ────→ Express Backend (port 3001) │
+│            └──────── HTTP API ───────→ Express Backend  │
+│                                              │          │
+│                                              ▼          │
+│                                         Pinata IPFS     │
 └─────────────────────────────────────────────────────────┘
-                                    │
-                            Pinata IPFS API
-                                    
+                          │
+                          ▼
 ┌─────────────────────────────────────────────────────────┐
-│           Hardhat Local Node (port 8545)                │
-│   LendingPool · LiquidityPool · MockUSDT                │
-│   MockPriceOracle · LPToken                             │
+│                    Sepolia Testnet                     │
+│                                                         │
+│  LendingPool · LiquidityPool · LPToken                 │
+│  MockUSDT · PriceOracle                                │
 └─────────────────────────────────────────────────────────┘
-```
+                          │
+                          ▼
+                 Chainlink ETH/USD Feed
+                          │
+                          ▼
+                   Sepolia Contracts
 
-- The **frontend** talks to smart contracts via MetaMask and to the backend via REST.
-- The **backend** holds the Pinata JWT server-side (never exposed to the browser) and maintains a shared in-memory transaction history.
-- The **Hardhat node** runs a local Ethereum chain with deterministic accounts and deployed contracts.
+┌─────────────────────────────────────────────────────────┐
+│                        Browser                          │
+│                                                         │
+│   React Frontend  ←→  MetaMask  ←→  ethers.js           │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                  Hardhat Local Node                    │
+│                                                         │
+│  LendingPool · LiquidityPool · LPToken                 │
+│  MockUSDT · MockPriceOracle                            │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+                Manual Oracle Price Updates
+                          │
+                          ▼
+                  Express IPFS Backend
+                          │
+                          ▼
+                      Pinata IPFS
+```
 
 ---
 
-## Smart Contracts
+# Smart Contracts
 
 | Contract | Description |
 |---|---|
-| `LendingPool.sol` | Core borrowing logic — deposit collateral, borrow, repay, withdraw, liquidate |
-| `LiquidityPool.sol` | USDT liquidity pool — LP deposit/withdraw, issues LP tokens |
-| `LPToken.sol` | ERC20 LP token representing liquidity provider shares |
-| `MockUSDT.sol` | ERC20 stablecoin used for local testing |
-| `MockPriceOracle.sol` | Manually settable ETH/USD price for local testing |
-| `PriceOracle.sol` | Chainlink-backed price feed for Sepolia deployment |
-
-**Protocol parameters:** 150% collateral ratio · 120% liquidation threshold · 5% fixed interest · 5% liquidation bonus
+| `LendingPool.sol` | Core borrowing and collateral management |
+| `LiquidityPool.sol` | Stablecoin liquidity management |
+| `LPToken.sol` | ERC20 token representing LP shares |
+| `MockUSDT.sol` | Local testing stablecoin |
+| `MockPriceOracle.sol` | Manual price oracle for local testing |
+| `PriceOracle.sol` | Chainlink-backed oracle for Sepolia |
 
 ---
 
-## Running Locally
+# Tech Stack
 
-### Option A — Docker (recommended)
+## Blockchain
 
-**Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
+- Solidity
+- Hardhat
+- ethers.js v6
+- OpenZeppelin Contracts
+- Chainlink Price Feeds
+
+## Frontend
+
+- React
+- Vite
+- TypeScript
+
+## Backend
+
+- Node.js
+- Express.js
+- Pinata IPFS SDK
+
+## Infrastructure
+
+- Docker
+- Docker Compose
+
+---
+
+# Repository Structure
+
+```text
+.
+├── backend/                 # Express IPFS backend
+├── contracts/               # Solidity smart contracts
+├── frontend/                # React frontend
+├── scripts/                 # Deployment scripts
+├── test/                    # Hardhat tests
+├── docker-compose.yml
+├── hardhat.config.ts
+└── README.md
+```
+
+---
+
+# Getting Started
+
+## Prerequisites
+
+Install:
+
+- Node.js 22+
+- npm
+- MetaMask
+- Docker Desktop (recommended)
+
+---
+
+# Running the Local Demo
+
+## Recommended Branch
+
+For the fully local demo environment:
 
 ```bash
-# 1. Clone the repository
+git checkout Local_test_mock_oracle
+```
+
+This branch includes:
+- Mock oracle support
+- Local Hardhat deployment
+- Easier liquidation testing
+- Fully isolated development environment
+
+---
+
+# Option A — Docker (Recommended)
+
+## 1. Clone the repository
+
+```bash
 git clone <repo-url>
 cd artemis-lending-pool-dapp
+```
 
-# 2. (Optional) Set up Pinata credentials for IPFS history
+## 2. Switch to the local demo branch
+
+```bash
+git checkout Local_test_mock_oracle
+```
+
+## 3. Configure environment variables (optional)
+
+```bash
 cp .env.example .env
-# Edit .env and fill in PINATA_JWT and PINATA_GATEWAY
-
-# 3. Start everything
-docker compose up --build
 ```
 
-Wait ~30 seconds. Docker starts three services in order:
+Fill in:
 
-| Service | Port | Description |
-|---|---|---|
-| `hardhat-node` | `8545` | Local Ethereum node, deploys all contracts on startup |
-| `ipfs-backend` | `3001` | Express server — proxies Pinata uploads, serves history |
-| `frontend` | `5173` | Vite + React UI |
-
-Open `http://localhost:5173`.
-
-**Useful commands:**
-```bash
-docker compose logs hardhat-node    # see deployed contract addresses
-docker compose logs ipfs-backend    # see IPFS upload logs
-docker compose down                 # stop everything
-docker compose up --build           # rebuild after code changes
-```
-
----
-
-### Option B — Manual (4 terminals)
-
-**Prerequisites:** Node.js 22+, npm
-
-```bash
-# Terminal 1 — local blockchain
-npx hardhat node
-
-# Terminal 2 — deploy contracts (run after node is ready)
-npx hardhat run scripts/deployLocal.ts
-
-# Terminal 3 — IPFS backend
-cd backend
-npm install
-npm start        # http://localhost:3001
-
-# Terminal 4 — frontend
-cd frontend
-npm install
-npm run dev      # http://localhost:5173
-```
-
----
-
-## MetaMask Setup
-
-### 1. Add the Hardhat Local network
-
-MetaMask → Networks dropdown → **Add a network manually**:
-
-| Field | Value |
-|---|---|
-| Network name | `Hardhat Local` |
-| RPC URL | `http://127.0.0.1:8545` |
-| Chain ID | `31337` |
-| Currency symbol | `ETH` |
-
-### 2. Import test accounts
-
-The Hardhat node always generates the same deterministic accounts. Import any of these private keys into MetaMask:
-
-| # | Role | Address | Private Key |
-|---|---|---|---|
-| 0 | Deployer / LP | `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` | `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` |
-| 1 | Borrower | `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` | `0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d` |
-| 2 | Liquidator | `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC` | `0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a` |
-
-> These are well-known public test accounts. **Never send real ETH to them.**
-
-### 3. Connect to the app
-
-Switch MetaMask to **Hardhat Local**, open `http://localhost:5173`, and click **Connect Wallet**.
-
----
-
-## After Every Restart
-
-Each time the Hardhat node restarts (or after `docker compose down && docker compose up`) the blockchain resets to block 0. You must do both steps in MetaMask before reconnecting:
-
-**Step 1 — Reset Account** (clears stale nonces)
-MetaMask → three-dot menu → Settings → Advanced → **Reset Account**
-Repeat for every account you have imported.
-
-**Step 2 — Disconnect the site** (clears stale session cache)
-MetaMask → three-dot menu → **Connected sites** → disconnect `localhost`
-
-> Skipping Step 2 causes all contract read calls (`balanceOf`, etc.) to silently return empty data (`0x`) even when the node is running correctly. This is the most common source of the "values showing as —" issue.
-
----
-
-## IPFS Transaction History
-
-Every transaction is uploaded to IPFS via [Pinata](https://pinata.cloud) and displayed in the **Transaction History** panel with:
-- Filter buttons by event type
-- Clickable CID links to view the raw JSON on the IPFS gateway
-- Shared history across all connected users (not per-browser localStorage)
-
-The Express backend (`backend/`) handles all Pinata communication so the JWT is never bundled into the browser.
-
-### Setup
-
-Create a `.env` file in the project root:
-```
-PINATA_JWT=your_pinata_jwt_here
+```env
+PINATA_JWT=your_pinata_jwt
 PINATA_GATEWAY=https://gateway.pinata.cloud
 ```
 
-You can get a JWT from [app.pinata.cloud](https://app.pinata.cloud) → API Keys → New Key.
+## 4. Start all services
 
-Without the backend running (or without a valid JWT) the app still works fully — the Transaction History panel displays a setup notice instead.
+```bash
+docker compose up --build
+```
 
 ---
 
-## Running Tests
+## Services
+
+| Service | Port | Description |
+|---|---|---|
+| Hardhat Node | 8545 | Local Ethereum blockchain |
+| Backend API | 3001 | IPFS upload backend |
+| Frontend | 5173 | React application |
+
+Open:
+
+```text
+http://localhost:5173
+```
+
+---
+
+## Useful Docker Commands
+
+```bash
+docker compose logs hardhat-node
+```
+
+```bash
+docker compose logs ipfs-backend
+```
+
+```bash
+docker compose down
+```
+
+```bash
+docker compose up --build
+```
+
+---
+
+# Option B — Manual Local Setup
+
+## Terminal 1 — Start Hardhat node
+
+```bash
+npx hardhat node
+```
+
+## Terminal 2 — Deploy contracts
+
+```bash
+npx hardhat run scripts/deployLocal.ts
+```
+
+## Terminal 3 — Start backend
+
+```bash
+cd backend
+npm install
+npm start
+```
+
+## Terminal 4 — Start frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend:
+
+```text
+http://localhost:5173
+```
+
+---
+
+# MetaMask Setup
+
+## Add Hardhat Network
+
+| Field | Value |
+|---|---|
+| Network Name | Hardhat Local |
+| RPC URL | http://127.0.0.1:8545 |
+| Chain ID | 31337 |
+| Currency Symbol | ETH |
+
+---
+
+## Import Test Accounts
+
+### Account 0 — Deployer / Liquidity Provider
+
+```text
+Private Key:
+0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
+
+### Account 1 — Borrower
+
+```text
+Private Key:
+0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+```
+
+### Account 2 — Liquidator
+
+```text
+Private Key:
+0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
+```
+
+> These are public Hardhat development accounts. Never send real assets to them.
+
+---
+
+# Local Demo Workflow
+
+A typical local demo flow:
+
+1. Deposit liquidity as LP
+2. Deposit ETH collateral as borrower
+3. Borrow MockUSDT
+4. Manipulate the mock oracle price
+5. Trigger liquidation
+6. Repay debt and withdraw collateral
+
+The `Local_test_mock_oracle` branch is specifically designed for this workflow.
+
+---
+
+# IPFS Transaction History
+
+Every transaction can optionally be:
+
+- Uploaded to IPFS
+- Pinned through Pinata
+- Displayed in the shared frontend history panel
+
+## Features
+
+- Shared transaction history
+- CID links
+- Event filtering
+- Persistent transaction records
+
+---
+
+# Environment Variables
+
+Copy and follow .env.example
+
+---
+
+# Testing
+
+Run the Hardhat test suite:
 
 ```bash
 npx hardhat test
 ```
 
-Tests cover the full protocol flow: liquidity deposit, collateral deposit, borrowing, interest accrual, repayment, withdrawal, and liquidation.
+Tests cover:
+
+- Liquidity deposits
+- Borrowing
+- Repayment
+- Withdrawals
+- Interest accrual
+- Liquidations
+- Oracle interactions
 
 ---
 
-## Sepolia Deployment
+# Sepolia Deployment
 
-Create a `.env` file in the project root with:
-```
-SEPOLIA_RPC_URL=your_sepolia_rpc_url
-SEPOLIA_PRIVATE_KEY=your_wallet_private_key
-```
+## Recommended Branch
 
-Deploy:
+Use:
+
 ```bash
-npx hardhat run scripts/deploy.ts --network sepolia
+git checkout main
 ```
 
-Then update `frontend/src/config/addresses.ts` with the deployed contract addresses.
+The `main` branch is configured for the Sepolia deployment environment.
+
+---
+
+## Deploy to Sepolia
+
+```bash
+npx hardhat run scripts/deploySepolia.ts --network sepolia
+```
+
+After deployment:
+
+1. Copy deployed contract addresses
+2. Update frontend configuration
+3. Restart the frontend
+
+---
+
+# Common Issues
+
+## MetaMask Returning Empty Values
+
+After restarting the Hardhat node:
+
+### Reset MetaMask Account
+
+MetaMask → Settings → Advanced → Reset Account
+
+### Disconnect Localhost Site
+
+MetaMask → Connected Sites → Disconnect localhost
+
+Then reconnect the wallet.
+
+---
+
+# Security Notes
+
+- Never expose private keys publicly
+- Never commit `.env` files
+- Never use development keys on mainnet
+- The backend keeps the Pinata JWT server-side only
+
+---
+
+# Future Improvements
+
+Potential future upgrades:
+
+- Dynamic interest rates
+- Multi-asset collateral
+- Governance token
+- Staking incentives
+- Advanced liquidation engine
+- Cross-chain support
+- Improved analytics dashboard
+- Persistent database-backed history
+
+---
+
+# Contributors
+
+BCOLN FS26 — Group Artemis
+
+---
+
+# License
+
+This project is intended for educational and demonstration purposes.
